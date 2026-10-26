@@ -28,6 +28,8 @@ if upload:
         try:
             source, notes, mapping, missing = load_workbook(raw, sheet, restore)
         except Exception as exc:
+            if restore:
+                st.warning('As notas não foram atribuídas. Conserve o ficheiro original e confira as duas folhas antes de tentar novamente.')
             st.error(f'Importação não concluída: {exc}')
             st.stop()
         st.session_state.update(identity=identity, source=source, notes=notes, mapping=mapping, missing=missing)
@@ -92,3 +94,4 @@ if upload:
         st.rerun()
     view = queue_view(source, notes, mapping, date_col, state_col, today, old_days)
     st.download_button('Guardar catálogo e revisão local em Excel', export_workbook(source, notes, view), 'REDA_Revisao_Local.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+

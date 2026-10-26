@@ -1,5 +1,7 @@
 """Importação e revisão local; sem ligação ou decisões em sistemas oficiais."""
 from io import BytesIO
+from hashlib import sha256
+import json
 import unicodedata
 import uuid
 from datetime import date, datetime
@@ -11,6 +13,25 @@ FIELDS = ['TÍTULO', 'AUTOR/FONTE', 'ORGANIZAÇÃO', 'DURAÇÃO DO VÍDEO', 'CÓ
 NOTES = ['ID LOCAL', 'ESTADO LOCAL', 'PRIORIDADE LOCAL', 'BLOQUEIOS', 'PRÓXIMO PASSO']
 STATES = ['', 'Por rever', 'Em revisão', 'A aguardar informação', 'Revisão local concluída']
 PRIORITIES = ['', 'Urgente', 'Alta', 'Normal', 'Baixa']
+RESOURCE_ID = '__REDA_ID_LOCAL'
+RESOURCE_HASH = '__REDA_CONTEUDO_SHA256_V1'
+
+
+def checked_ids(frame, column):
+    ids = frame[column].map(text)
+    if ids.map(lambda value: not value.strip()).any() or ids.duplicated().any():
+        raise ValueError('Identificadores locais vazios ou duplicados. Recuperação de notas bloqueada.')
+    return ids
+
+
+def resource_hashes(frame):
+    """Impressão do conteúdo tabular lido do Excel; não é assinatura de autenticidade."""
+    columns = [c for c in frame.columns if c != RESOURCE_ID]
+    return pd.Series([
+        sha256(json.dumps([[text(c), text(row[c])] for c in columns],
+                          ensure_ascii=False).encode('utf-8')).hexdigest()
+        for _, row in frame.iterrows()
+    ], index=frame.index, dtype=object)
 
 
 def text(value):
@@ -48,12 +69,22 @@ def load_workbook(data, sheet=0, restore=False):
         if sheet != 'Recursos' or 'Revisao_local' not in book.sheet_names:
             raise ValueError('Selecione a folha Recursos de uma exportação desta aplicação.')
         saved = pd.read_excel(book, sheet_name='Revisao_local', dtype=object).fillna('')
-        if list(saved.columns) != NOTES or len(saved) != len(source):
-            raise ValueError('A revisão guardada não corresponde às linhas dos recursos.')
-        ids = saved['ID LOCAL'].map(text)
-        if ids.eq('').any() or ids.duplicated().any():
-            raise ValueError('Identificadores locais inválidos ou repetidos.')
-        notes = saved
+        if RESOURCE_ID not in source or list(saved.columns) != NOTES + [RESOURCE_HASH]:
+            raise ValueError('Exportação antiga ou estrutura incompatível: falta a ligação verificável '
+                             'entre recursos e notas. Recuperação de notas bloqueada; conserve o '
+                             'original e confira as notas manualmente. Pode importar sem restaurar.')
+        source_ids = checked_ids(source, RESOURCE_ID)
+        saved_ids = checked_ids(saved, 'ID LOCAL')
+        if set(source_ids) != set(saved_ids):
+            raise ValueError('Recursos inseridos, eliminados ou IDs alterados entre folhas. '
+                             'Recuperação de notas bloqueada; confira o ficheiro original.')
+        aligned = saved.set_index(saved_ids).loc[source_ids].reset_index(drop=True)
+        if not resource_hashes(source).eq(aligned[RESOURCE_HASH]).all():
+            raise ValueError('O conteúdo dos recursos não corresponde aos IDs guardados. '
+                             'Recuperação de notas bloqueada; confira o ficheiro original.')
+        notes = aligned[NOTES].copy()
+    # Coluna técnica reservada: nunca é um campo editável ou um ID oficial.
+    source = source.drop(columns=[RESOURCE_ID], errors='ignore')
     mapping = field_mapping(source)
     missing = [f for f in FIELDS if f not in mapping]
     return source, notes, mapping, missing
@@ -99,13 +130,33 @@ def queue_view(source, notes, mapping, date_column=None, state_column=None, toda
 
 
 def export_workbook(source, notes, view):
+    if RESOURCE_ID in source.columns:
+        raise ValueError('Coluna técnica reservada presente no catálogo.')
+    if len(source) != len(notes) or list(notes.columns) != NOTES:
+        raise ValueError('Catálogo e notas locais incompatíveis.')
+    ids = checked_ids(notes, 'ID LOCAL')
+    resources = source.copy()
+    resources[RESOURCE_ID] = ids.to_numpy()
+    # Calcular sobre a representação efetivamente reimportada, incluindo conversões
+    # Excel (datas, números, vazios), para evitar falsos conflitos na reabertura.
+    snapshot = BytesIO()
+    with pd.ExcelWriter(snapshot, engine='openpyxl') as writer:
+        write_frame(writer, 'Recursos', resources)
+    persisted = pd.read_excel(BytesIO(snapshot.getvalue()), dtype=object, engine='openpyxl')
+    saved = notes.reset_index(drop=True).copy()
+    saved[RESOURCE_HASH] = resource_hashes(persisted)
     output = BytesIO()
     # Texto iniciado por '=' é texto, não uma fórmula executável na exportação.
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        for name, frame in [('Recursos', source), ('Revisao_local', notes), ('Fila_semanal', view)]:
-            frame.to_excel(writer, sheet_name=name, index=False)
-            for row in writer.sheets[name].iter_rows():
-                for cell in row:
-                    if cell.data_type == 'f':
-                        cell.data_type = 's'
+        for name, frame in [('Recursos', resources), ('Revisao_local', saved), ('Fila_semanal', view)]:
+            write_frame(writer, name, frame)
     return output.getvalue()
+
+
+def write_frame(writer, name, frame):
+    frame.to_excel(writer, sheet_name=name, index=False)
+    for row in writer.sheets[name].iter_rows():
+        for cell in row:
+            if cell.data_type == 'f':
+                cell.data_type = 's'
+

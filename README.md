@@ -28,11 +28,11 @@ A fila inclui todos os recursos importados com estado local desconhecido; o util
 
 ## Exportação e persistência
 
-- `Recursos`: catálogo da folha selecionada e eventuais edições humanas, incluindo colunas adicionais.
-- `Revisao_local`: IDs e notas locais na ordem dos recursos, para retomar o trabalho.
+- `Recursos`: catálogo da folha selecionada e eventuais edições humanas, incluindo colunas adicionais e a coluna técnica reservada `__REDA_ID_LOCAL`.
+- `Revisao_local`: o mesmo ID em `ID LOCAL`, notas locais e impressão do conteúdo `__REDA_CONTEUDO_SHA256_V1`, para retomar o trabalho independentemente da ordem das linhas.
 - `Fila_semanal`: fotografia ordenada, incluindo concluídos, estado da fonte, antiguidade, avisos e campos por completar.
 
-A exportação é uma cópia tabular, não preserva formatação, macros, fórmulas, outras folhas ou objetos do livro original. Texto que começa por `=` é guardado como texto. O original carregado não é escrito. Não reordenar nem eliminar linhas separadamente nas folhas `Recursos` e `Revisao_local`: a restauração associa-as por posição e verifica contagem e IDs, mas não deteta uma reordenação manual. Não há reconciliação automática com novos ficheiros; um ficheiro novo inicia outra fila. A escolha de colunas de data/estado, associações manuais e o limiar devem ser confirmados em cada sessão; não são regras oficiais guardadas.
+A exportação é uma cópia tabular, não preserva formatação, macros, fórmulas, outras folhas ou objetos do livro original. Texto que começa por `=` é guardado como texto. O original carregado não é escrito. A recuperação associa por ID persistente, nunca por posição ou título. Cada folha pode ser ordenada independentemente, movendo sempre a linha inteira, incluindo as colunas técnicas. A importação exige IDs preenchidos, únicos e com conjuntos iguais nas duas folhas; verifica ainda a impressão SHA-256 do conteúdo de cada recurso. Falhas interrompem toda a recuperação, sem atribuição parcial, e a interface apresenta um aviso. Não há reconciliação automática com novos ficheiros; um ficheiro novo inicia outra fila. A escolha de colunas de data/estado, associações manuais e o limiar devem ser confirmados em cada sessão; não são regras oficiais guardadas.
 
 Não existe base de dados, gravação automática em disco, serviço de agendamento, acesso a Notion, chamadas ao REDA nem aprovação/rejeição automática. Para uso local, executar na própria máquina. Uma instalação Streamlit remota processará os ficheiros no respetivo servidor.
 
@@ -44,7 +44,18 @@ python -m unittest discover -s tests -v
 
 Dados exclusivamente fictícios. Cobertura: importação de Excel, colunas ausentes e variantes, valores incompletos, folha vazia, datas desconhecidas/inválidas/futuras, prioridades e desempates, separação dos estados, exportação/reimportação, texto semelhante a fórmulas e interação da interface (início, importação, criação de campos, prioridade e bloqueio).
 
-Verificado nesta alteração: 11 testes aprovados, Python 3.12, pandas 2.2.3, openpyxl 3.1.5, Streamlit 1.66.1.
+Verificado na correção de 26 de outubro de 2026: 24 testes aprovados (`python -m unittest discover -s tests -v`) e compilação Python (`python -m compileall -q reda_queue.py REDA_InterfaceGrafica_Streamlit.py tests`). Dados exclusivamente fictícios; inclui três testes de interface Streamlit.
+
+## Recuperação segura — limites e compatibilidade
+
+- Exportações anteriores sem ID nas duas folhas e sem impressão do conteúdo não permitem provar a ligação. A recuperação automática é bloqueada, mesmo com contagens iguais. Conservar o original; conferir e transcrever as notas manualmente ou importar sem restaurar para iniciar uma revisão vazia. Não existe migração por posição nem por títulos semelhantes.
+- Inserção/eliminação numa só folha, IDs vazios/repetidos ou conjuntos diferentes bloqueiam a recuperação. Alterações externas no catálogo, incluindo ordenação de células sem mover o ID, também bloqueiam. Para editar o catálogo e conservar as notas, restaurar primeiro, editar na aplicação e voltar a exportar: a impressão é recalculada sobre o Excel produzido.
+- A impressão inclui todas as colunas do catálogo, não as notas humanas. É uma verificação de consistência, não uma assinatura ou proteção contra manipulação deliberada. Não editar colunas técnicas. Recursos com conteúdo integralmente idêntico só são distinguíveis pelos IDs; uma troca manual dos seus IDs não pode ser detetada pelo conteúdo.
+- Remover o mesmo par ID/recurso de ambas as folhas deixa um subconjunto internamente consistente: não há histórico externo para detetar essa remoção conjunta. Uma troca integral entre livros de registos com ID e conteúdo coincidentes também não é distinguível. Conservar sempre a exportação original.
+- A coluna `__REDA_ID_LOCAL` é reservada, omitida dos campos editáveis e regenerada com novos IDs ao escolher importar sem restaurar. Não a usar como coluna de dados próprios nem como identificador oficial REDA.
+- Não há reconciliação entre catálogos semanais distintos. O hash não serve para procurar correspondências entre ficheiros e não estabelece identidade oficial. Essa funcionalidade continua dependente de critérios de identificação validados.
+
+Os testes adicionais cobrem reordenação independente e simultânea, títulos repetidos, IDs duplicados/vazios nas duas folhas, substituição com igual contagem, inserção/eliminação em cada folha, alteração externa de conteúdo, recuperação de exportações novas, bloqueio de exportações antigas, sucessivas edições humanas/exportações, fórmulas como texto, datas/números/vazios, catálogo vazio e aviso de bloqueio na interface. Mantêm-se os testes de edição, prioridades e separação entre estados locais e oficiais.
 
 ## Ainda necessita de validação efetiva
 
@@ -54,3 +65,4 @@ Verificado nesta alteração: 11 testes aprovados, Python 3.12, pandas 2.2.3, op
 - Validar a adequação à rotina REDA e a reabertura do Excel com a ferramenta habitual.
 
 Os testes demonstram comportamento técnico com dados fictícios; não demonstram utilização efetiva, integração oficial, instalação ou aceitação operacional.
+

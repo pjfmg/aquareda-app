@@ -80,3 +80,117 @@ class QueueTests(unittest.TestCase):
         notes = new_notes(1)
         raw = export_workbook(source, notes, queue_view(source, notes, {}))
         self.assertEqual(open_xlsx(BytesIO(raw))['Recursos']['A2'].data_type, 's')
+
+
+
+class AssociationTests(unittest.TestCase):
+    def setUp(self):
+        # Títulos repetidos: a associação nunca depende do título.
+        self.source = pd.DataFrame({'TÍTULO': ['Mesmo', 'Mesmo', 'Outro'],
+                                    'Extra': ['a', 'b', 'c']})
+        self.notes = new_notes(3)
+        self.notes['BLOQUEIOS'] = ['Nota A', 'Nota B', 'Nota C']
+        raw = export_workbook(self.source, self.notes, queue_view(self.source, self.notes, {}))
+        self.frames = pd.read_excel(BytesIO(raw), sheet_name=None, dtype=object)
+
+    def raw(self):
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            for name, frame in self.frames.items():
+                frame.to_excel(writer, sheet_name=name, index=False)
+        return output.getvalue()
+
+    def restore(self):
+        return load_workbook(self.raw(), 'Recursos', True)
+
+    def test_resources_reordered_independently(self):
+        self.frames['Recursos'] = self.frames['Recursos'].iloc[[2, 0, 1]]
+        source, notes, _, _ = self.restore()
+        self.assertEqual(list(source['Extra']), ['c', 'a', 'b'])
+        self.assertEqual(list(notes['BLOQUEIOS']), ['Nota C', 'Nota A', 'Nota B'])
+
+    def test_notes_reordered_independently(self):
+        self.frames['Revisao_local'] = self.frames['Revisao_local'].iloc[::-1]
+        _, notes, _, _ = self.restore()
+        pd.testing.assert_frame_equal(notes, self.notes, check_dtype=False)
+
+    def test_both_sheets_differently_reordered(self):
+        self.frames['Recursos'] = self.frames['Recursos'].iloc[[1, 2, 0]]
+        self.frames['Revisao_local'] = self.frames['Revisao_local'].iloc[[2, 0, 1]]
+        source, notes, _, _ = self.restore()
+        self.assertEqual(list(zip(source['Extra'], notes['BLOQUEIOS'])),
+                         [('b', 'Nota B'), ('c', 'Nota C'), ('a', 'Nota A')])
+
+    def test_duplicate_or_blank_ids_in_either_sheet_block_all_notes(self):
+        from reda_queue import RESOURCE_ID
+        for sheet, column in [('Recursos', RESOURCE_ID), ('Revisao_local', 'ID LOCAL')]:
+            for value in ['', self.frames[sheet].loc[0, column]]:
+                with self.subTest(sheet=sheet, value=value):
+                    old = self.frames[sheet].loc[1, column]
+                    self.frames[sheet].loc[1, column] = value
+                    with self.assertRaisesRegex(ValueError, 'bloqueada'):
+                        self.restore()
+                    self.frames[sheet].loc[1, column] = old
+
+    def test_deletion_in_either_sheet_blocks(self):
+        for sheet in ['Recursos', 'Revisao_local']:
+            original = self.frames[sheet]
+            self.frames[sheet] = original.iloc[:-1]
+            with self.subTest(sheet=sheet), self.assertRaisesRegex(ValueError, 'bloqueada'):
+                self.restore()
+            self.frames[sheet] = original
+
+    def test_insertion_in_either_sheet_blocks(self):
+        from reda_queue import RESOURCE_ID
+        for sheet, column in [('Recursos', RESOURCE_ID), ('Revisao_local', 'ID LOCAL')]:
+            original = self.frames[sheet]
+            added = original.iloc[[0]].copy()
+            added[column] = 'novo-id-ficticio'
+            self.frames[sheet] = pd.concat([original, added], ignore_index=True)
+            with self.subTest(sheet=sheet), self.assertRaisesRegex(ValueError, 'bloqueada'):
+                self.restore()
+            self.frames[sheet] = original
+
+    def test_replacement_with_same_row_count_blocks(self):
+        from reda_queue import RESOURCE_ID
+        self.frames['Recursos'].loc[0, RESOURCE_ID] = 'outro-id'
+        with self.assertRaisesRegex(ValueError, 'bloqueada'):
+            self.restore()
+
+    def test_sorting_content_without_ids_blocks(self):
+        self.frames['Recursos']['Extra'] = ['b', 'a', 'c']
+        with self.assertRaisesRegex(ValueError, 'conteúdo'):
+            self.restore()
+
+    def test_external_content_edit_blocks(self):
+        self.frames['Recursos'].loc[0, 'TÍTULO'] = 'Substituído'
+        with self.assertRaisesRegex(ValueError, 'conteúdo'):
+            self.restore()
+
+    def test_legacy_export_is_blocked_but_can_start_fresh(self):
+        from reda_queue import RESOURCE_ID, RESOURCE_HASH
+        self.frames['Recursos'] = self.frames['Recursos'].drop(columns=RESOURCE_ID)
+        self.frames['Revisao_local'] = self.frames['Revisao_local'].drop(columns=RESOURCE_HASH)
+        with self.assertRaisesRegex(ValueError, 'antiga'):
+            self.restore()
+        _, notes, _, _ = load_workbook(self.raw(), 'Recursos', False)
+        self.assertTrue(notes['BLOQUEIOS'].eq('').all())
+
+    def test_human_edits_survive_successive_exports(self):
+        source, notes, mapping, _ = self.restore()
+        source.loc[1, 'TÍTULO'] = 'Edição humana'
+        notes.loc[1, 'PRÓXIMO PASSO'] = 'Verificar licença'
+        raw = export_workbook(source, notes, queue_view(source, notes, mapping))
+        restored, saved, _, _ = load_workbook(raw, 'Recursos', True)
+        pd.testing.assert_frame_equal(restored, source, check_dtype=False)
+        pd.testing.assert_frame_equal(saved, notes, check_dtype=False)
+
+    def test_excel_types_formulas_blanks_and_empty_catalog_roundtrip(self):
+        for source in [pd.DataFrame({'TÍTULO': ['=1+1', 'NA', None],
+                                     'Data': [date(2026, 1, 1), None, None],
+                                     'Número': [1.0, 2.5, None]}),
+                       pd.DataFrame(columns=['TÍTULO'])]:
+            notes = new_notes(len(source))
+            raw = export_workbook(source, notes, queue_view(source, notes, {}))
+            _, restored_notes, _, _ = load_workbook(raw, 'Recursos', True)
+            pd.testing.assert_frame_equal(restored_notes, notes, check_dtype=False)
